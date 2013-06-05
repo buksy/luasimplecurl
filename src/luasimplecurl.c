@@ -6,6 +6,14 @@
 
 #define SIMPLE_CURL_METATABLE "70474f43-b594-4a62-bcc0-8239b2da7b0a"
 
+
+#define CURL_ACTION_CHECK(out,L) \
+	if (CURLE_OK != out) \
+	  luaL_error (L, "CURL Error ( %d - %s)", \
+	    out, curl_easy_strerror (out));\
+	(out == CURLE_OK);
+
+
 typedef struct simple_curl
 {
   CURL *curl;
@@ -54,7 +62,38 @@ newconnect (lua_State * L)
   return 1;
 }
 
+static int
+url_encode (lua_State * L)
+{
+
+  return 1;
+}
+
+static int
+url_decode (lua_State * L)
+{
+
+  return 1;
+}
+
+static int
+table_to_JSON (lua_State * L)
+{
+
+  return 1;
+}
+
+static int
+json_to_table (lua_State * L)
+{
+
+  return 1;
+}
+
 /////////////////////////////------- End of Library Functions -------//////////////////////////////////
+
+
+
 
 
 ////////////////////////////-------- Metatable Functions ----------////////////////////////////////////
@@ -73,7 +112,8 @@ gc_curl (lua_State * L)
 static int
 perform_get (lua_State * L)
 {
-  printf ("GET method called");
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_CURL_METATABLE);
+  CURL_ACTION_CHECK (curl_easy_perform (c->curl), L);
   return 0;
 }
 
@@ -110,6 +150,19 @@ set_header (lua_State * L)
 static int
 set_basic_auth (lua_State * L)
 {
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_CURL_METATABLE);
+  const char *user = luaL_checkstring (L, 2);
+  const char *pass = luaL_checkstring (L, 3);
+  curl_easy_setopt (c->curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+  curl_easy_setopt (c->curl, CURLOPT_USERNAME, user);
+  curl_easy_setopt (c->curl, CURLOPT_PASSWORD, pass);
+  return 0;
+}
+
+static int
+disconnect (lua_State * L)
+{
+
   return 0;
 }
 
@@ -118,12 +171,13 @@ set_basic_auth (lua_State * L)
 static const luaL_Reg c_funcs[] = {
   {"__gc", gc_curl},
   {"get", perform_get},
-	{"post", perform_post},
-	{"put", perform_put},
-	{"delete", perfrom_delete},
-	{"setCURLOption", setCURL_options},
-	{"setHeader", set_header},
-	{"setBasicAuth",set_basic_auth},
+  {"post", perform_post},
+  {"put", perform_put},
+  {"delete", perfrom_delete},
+  {"setCURLOption", setCURL_options},
+  {"setHeader", set_header},
+  {"setBasicAuth", set_basic_auth},
+  {"disconnect", disconnect},
   {NULL, NULL}
 };
 
@@ -146,10 +200,11 @@ All the functions supported by library
 **/
 static const luaL_Reg functions[] = {
   {"newconnect", newconnect},
-	{"URLEncode", url_encode},
-	{"ULLDecode", url_decode},
+  {"URLEncode", url_encode},
+  {"URLDecode", url_decode},
   {"tableToJSON", table_to_JSON},
-	{"JSONToTable", json_to_table},
+  {"JSONToTable", json_to_table},
+
   {NULL, NULL}
 };
 

@@ -36,6 +36,7 @@ typedef struct header_list
   int hcount;
 } sHeaderList;
 
+typedef struct curl_slist reqHeaders;
 
 typedef struct simple_curl
 {
@@ -46,6 +47,7 @@ typedef struct simple_curl
   int writeRef;
   int readRef;
   int lastError;
+  reqHeaders *requestH;
 } sCurl;
 
 
@@ -70,7 +72,8 @@ clean_up_headers (sHeaderList * hlist)
       int i = 0;
       for (i = 0; i < hlist->hcount; i++)
 	{
-	  free_header (hlist->headers[i]);
+	  if (hlist->headers[i])
+	    free_header (hlist->headers[i]);
 	}
       free (hlist->headers);
       hlist->headers = NULL;
@@ -87,15 +90,56 @@ build_header (sHeader * h, char *hline)
   while (ptr != NULL)
     {
       if (!h->name)
-	h->name = ptr;
+	h->name = strdup (ptr);
       else
-	h->value = ptr;
+	h->value = strdup (ptr);
       ptr = strtok_r (NULL, "= ", &saveptr);
     }
 
 }
 
 // Read callback function -- This will be used in PUT
+size_t
+read_callback_fn (void *ptr, size_t size, size_t nmemb, void *userdata)
+{
+  //printf ("Calling write \n\n");
+  sCurl *c = (sCurl *) userdata;
+  size_t ret = 0;
+  if (c->readRef != LUA_REFNIL)
+    {
+      ret = size * nmemb;
+      // Load the function in LUA 
+      lua_rawgeti (c->L, LUA_REGISTRYINDEX, c->readRef);
+      lua_pushinteger (c->L, ret);
+      lua_call (c->L, 1, 2);
+      // Get the reaturn value from the stack 
+      // Callback to lua should return size of data and the data it self 
+      size_t out = 0;
+      out = lua_tointeger (c->L, -2);
+      if (out > 0)
+	{
+
+	  if (out <= ret)
+	    {
+	      memcpy (ptr, lua_tolstring (c->L, -1, &out), out);
+	      ret = out;
+	    }
+	  else
+	    {
+	      luaL_error (c->L, "More data send from the read function");
+	      ret = CURL_READFUNC_ABORT;
+	    }
+
+	}
+      else if (out < 0)
+	{
+	  ret = CURL_READFUNC_ABORT;
+	}
+      else
+	ret = 0;
+    }
+  return ret;
+}
 
 // Write callback function this will be used in when data if comething back from the server 
 size_t
@@ -150,6 +194,7 @@ header_callback_fn (void *ptr, size_t size, size_t nmemb, void *userdata)
 	  scurl->hlist->headers[scurl->hlist->hcount] = h;
 	  //printf("4\n");
 	  scurl->hlist->hcount++;
+	  free (header);
 	}
       else
 	{
@@ -179,48 +224,44 @@ newconnect (lua_State * L)
     }
 
   // Load the user def table 
+  // stack now contains: -1 => table
   if (lua_istable (L, -1))
     {
-
-      //printf ("1\n");
-//    printf ("Top %d\n", lua_gettop(L));
-
-      lua_pushstring (L, "url");
-      lua_gettable (L, -2);
-      if (lua_isstring (L, -1))
+      lua_pushnil (L);
+      // stack now contains: -1 => nil; -2 => table
+      while (lua_next (L, -2))
 	{
-	  curl_easy_setopt (curl, CURLOPT_URL, lua_tostring (L, -1));
-	  lua_pop (L, 1);
+	  // stack now contains: -1 => value; -2 => key; -3 => table
+	  // copy the key so that lua_tostring does not modify the original
+	  lua_pushvalue (L, -2);
+	  // stack now contains: -1 => key; -2 => value; -3 => key; -4 => table
+	  const char *key = lua_tostring (L, -1);
+	  if (strcasecmp ("url", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_URL, lua_tostring (L, -2));
+	    }
+	  else if (strcasecmp ("follow_redirect", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION,
+				(lua_toboolean (L, -2)) ? 1L : 0L);
+	    }
+	  else if (strcasecmp ("ssl_verify", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER,
+				(lua_toboolean (L, -2)) ? 1L : 0L);
+	    }
+	  else if (strcasecmp ("ssl_cert", key) == 0)
+	    {
+
+	    }
+	  // pop value + copy of key, leaving original key
+	  lua_pop (L, 2);
+	  // stack now contains: -1 => key; -2 => table
 	}
-
-//    printf ("Top %d\n", lua_gettop(L)); 
-
-//     lua_pushstring (L, "follow_redirect");   
-//     lua_gettable (L, -2);
-//     printf ("Top %d\n", lua_gettop(L)); 
-//     if (!(lua_isnoneornil(L, -1)) && (lua_toboolean (L, -1))) 
-//     {
-//      curl_easy_setopt (curl, CURLOPT_FOLLOWLOCATION, 1L);
-//      lua_pop (L, 1);
-//     }
-
-      lua_pushstring (L, "ssl_veryfy");
-      lua_gettable (L, -2);
-      if (!(lua_isnoneornil (L, -1)) && (!lua_toboolean (L, -1)))
-	{
-	  //printf ("4\n");
-	  curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER, 0L);
-	  lua_pop (L, 1);
-	}
-
-//    printf ("Top %d\n", lua_gettop(L));
-
+      // stack now contains: -1 => table (when lua_next returns 0 it pops the key
+      // but does not push anything.)
+      // Pop table
       lua_pop (L, 1);
-
-    }
-  else if (!lua_isnil (L, -2))
-    {
-      luaL_error (L, "Invalid parameter, definition table required");
     }
 
   lua_settop (L, 0);
@@ -232,12 +273,17 @@ newconnect (lua_State * L)
   c->readRef = LUA_REFNIL;
   c->hlist = calloc (1, sizeof (sHeaderList));
   c->L = L;
+  c->requestH = NULL;
   c->curl = curl;
+
+  c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
 
   curl_easy_setopt (curl, CURLOPT_WRITEHEADER, (void *) c);
   curl_easy_setopt (curl, CURLOPT_HEADERFUNCTION, header_callback_fn);
   curl_easy_setopt (curl, CURLOPT_WRITEDATA, (void *) c);
   curl_easy_setopt (curl, CURLOPT_WRITEFUNCTION, write_callback_fn);
+  curl_easy_setopt (curl, CURLOPT_READDATA, (void *) c);
+  curl_easy_setopt (curl, CURLOPT_READFUNCTION, read_callback_fn);
 
   // Now set the metatable
   luaL_getmetatable (L, SIMPLE_HTTP_METATABLE);
@@ -289,14 +335,16 @@ gc_curl (lua_State * L)
   if (c)
     {
       if (c->curl)
-	curl_easy_cleanup (c->curl);
+	{
+	  curl_easy_cleanup (c->curl);
+	  c->curl = NULL;
+	}
 
       if (c->hlist)
 	{
-	  // Seeme quite wiered that lua wants to clean up this memmory eventhough it done not create them 
-//      clean_up_headers(c->hlist);
-//      free(c->hlist);
-//      c->hlist = NULL;
+	  clean_up_headers (c->hlist);
+	  free (c->hlist);
+	  c->hlist = NULL;
 	}
 
       if (c->writeRef != LUA_REFNIL)
@@ -310,6 +358,12 @@ gc_curl (lua_State * L)
 	  luaL_unref (L, LUA_REGISTRYINDEX, c->readRef);
 	  c->readRef = LUA_REFNIL;
 	}
+
+      if (c->requestH)
+	{
+	  curl_slist_free_all (c->requestH);
+	  c->requestH = NULL;
+	}
     }
   return 0;
 }
@@ -318,6 +372,7 @@ static int
 perform_get (lua_State * L)
 {
   sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  curl_easy_setopt (c->curl, CURLOPT_HTTPGET, 1L);
   LUA_SET_CALLBACK_FUNCTION (L, 2, writeRef, c);
   DO_CURL_PERFORM (c);
   lua_settop (L, 0);
@@ -328,20 +383,52 @@ perform_get (lua_State * L)
 static int
 perform_post (lua_State * L)
 {
+// 1 ==> the Object, 2==> POST String/or a readfunction , 3 => the callback function
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  if (lua_isstring (L, 2))
+    {
 
-//   DO_CURL_PERFORM (c);
-//   lua_settop(L, 0);
-//   lua_pushboolean(L, (c->lastError == CURLE_OK));
+      curl_easy_setopt (c->curl, CURLOPT_POSTFIELDS, lua_tostring (L, 2));
+
+    }
+  else if (lua_isfunction (L, 2))
+    {
+      // Set the chunk encoding header
+      c->requestH =
+	curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
+      curl_easy_setopt (c->curl, CURLOPT_HTTPHEADER, c->requestH);
+      curl_easy_setopt (c->curl, CURLOPT_POST, 1L);
+      LUA_SET_CALLBACK_FUNCTION (L, 2, readRef, c);
+
+    }
+
+  LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  DO_CURL_PERFORM (c);
+  lua_settop (L, 0);
+  lua_pushboolean (L, (c->lastError == CURLE_OK));
   return 1;
 }
 
 static int
 perform_put (lua_State * L)
 {
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
 
-//   DO_CURL_PERFORM (c);
-//   lua_settop(L, 0);
-//   lua_pushboolean(L, (c->lastError == CURLE_OK));
+  if (lua_isfunction (L, 2))
+    {
+      // Set the chunk encoding header
+      c->requestH =
+	curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
+      curl_easy_setopt (c->curl, CURLOPT_HTTPHEADER, c->requestH);
+      curl_easy_setopt (c->curl, CURLOPT_UPLOAD, 1L);
+      LUA_SET_CALLBACK_FUNCTION (L, 2, readRef, c);
+
+    }
+
+  LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  DO_CURL_PERFORM (c);
+  lua_settop (L, 0);
+  lua_pushboolean (L, (c->lastError == CURLE_OK));
   return 1;
 }
 
@@ -452,7 +539,7 @@ luaopen_simplehttp (lua_State * L)
   /* Create module */
   luaL_newlib (L, functions);
   // Define a standard option table, there is only pretty limited amount of curl opetions that we use day to day
-  // url , follow_redirect, ssl_veryfy 
+  // url , follow_redirect, ssl_verify 
 
   return 1;
 }

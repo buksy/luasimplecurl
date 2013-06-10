@@ -1,8 +1,6 @@
 simplehttp = require "simplehttp"
 
-local def = {}
-def['url'] = ""
-def['ssl_veryfy'] = false
+local def = {url='https:///?wsdl', ssl_verify=false}
 
 http = simplehttp.newconnect(def)
 --[[print (getmetatable(http))
@@ -22,4 +20,5 @@ local a = ""
 else 
 	print (http:getLastError())
 end
+http:disconnect()
 --http:setBasicAuth ("", "")

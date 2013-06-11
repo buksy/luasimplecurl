@@ -254,6 +254,15 @@ newconnect (lua_State * L)
 	    {
 
 	    }
+	  else if (strcasecmp ("username", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+	      curl_easy_setopt (curl, CURLOPT_USERNAME, lua_tostring (L, -2));
+	    }
+	  else if (strcasecmp ("password", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_PASSWORD, lua_tostring (L, -2));
+	    }
 	  // pop value + copy of key, leaving original key
 	  lua_pop (L, 2);
 	  // stack now contains: -1 => key; -2 => table
@@ -433,12 +442,6 @@ perform_put (lua_State * L)
 }
 
 static int
-perfrom_delete (lua_State * L)
-{
-  return 0;
-}
-
-static int
 setCURL_options (lua_State * L)
 {
   return 0;
@@ -447,13 +450,33 @@ setCURL_options (lua_State * L)
 static int
 set_header (lua_State * L)
 {
-  return 0;
+  return 1;
 }
 
 static int
 get_header (lua_State * L)
 {
-
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  lua_settop (L, 0);
+  if (c->hlist)
+    {
+      int i = 0;
+      lua_newtable (L);
+      for (i = 0; i < c->hlist->hcount; i++)
+	{
+	  sHeader *h = c->hlist->headers[i];
+	  if (h)
+	    {
+	      lua_pushstring (L, h->name);
+	      lua_pushstring (L, h->value);
+	      lua_settable (L, -3);
+	    }
+	}
+    }
+  else
+    {
+      lua_pushnil (L);
+    }
   return 1;
 }
 
@@ -492,11 +515,10 @@ static const luaL_Reg c_funcs[] = {
   {"get", perform_get},
   {"post", perform_post},
   {"put", perform_put},
-  {"delete", perfrom_delete},
-  {"setCURLOption", setCURL_options},
-  {"setRequestHeader", set_header},
+  // {"setCURLOption", setCURL_options},
+  {"setRequestHeaders", set_header},
   {"setBasicAuth", set_basic_auth},
-  {"getResponseHeader", get_header},
+  {"getResponseHeaders", get_header},
   {"disconnect", disconnect},
   {"getLastError", get_last_error},
   {NULL, NULL}

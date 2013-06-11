@@ -1,6 +1,6 @@
 simplehttp = require "simplehttp"
 
-local def = {url='https:///?wsdl', ssl_verify=false}
+local def = {url='', ssl_verify=false}
 
 http = simplehttp.newconnect(def)
 --[[print (getmetatable(http))
@@ -19,6 +19,10 @@ local a = ""
 	print (a)
 else 
 	print (http:getLastError())
+end
+local headers = http:getResponseHeaders()
+for key_name, val in pairs(headers) do
+	print (key_name .. val)
 end
 http:disconnect()
 --http:setBasicAuth ("", "")

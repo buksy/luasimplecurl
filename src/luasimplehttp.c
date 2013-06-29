@@ -280,6 +280,16 @@ newconnect (lua_State * L)
 	    {
 	      curl_easy_setopt (curl, CURLOPT_PASSWORD, lua_tostring (L, -2));
 	    }
+	  else if (strcasecmp ("conn_timeout", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_CONNECTTIMEOUT_MS,
+				lua_tonumber (L, -2));
+	    }
+	  else if (strcasecmp ("read_timeout", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_TIMEOUT_MS,
+				lua_tonumber (L, -2));
+	    }
 	  // pop value + copy of key, leaving original key
 	  lua_pop (L, 2);
 	  // stack now contains: -1 => key; -2 => table
@@ -302,7 +312,7 @@ newconnect (lua_State * L)
   c->requestH = NULL;
   c->curl = curl;
 
-  c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
+  //c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
 
   curl_easy_setopt (curl, CURLOPT_WRITEHEADER, (void *) c);
   curl_easy_setopt (curl, CURLOPT_HEADERFUNCTION, header_callback_fn);
@@ -322,14 +332,36 @@ static int
 url_encode (lua_State * L)
 {
 
-  return 1;
+  if (!lua_isnil (L, 1))
+    {
+      const char *s = luaL_checkstring (L, 1);
+      lua_pushstring (L, curl_escape (s, strlen (s)));
+      return 1;
+    
+}
+  else
+    {
+      luaL_error (L, "string parameter expected");
+    }
+  return 0;
 }
 
 static int
 url_decode (lua_State * L)
 {
 
-  return 1;
+  if (!lua_isnil (L, 1))
+    {
+      const char *s = luaL_checkstring (L, 1);
+      lua_pushstring (L, curl_unescape (s, strlen (s)));
+      return 1;
+    
+}
+  else
+    {
+      luaL_error (L, "string parameter expected");
+    }
+  return 0;
 }
 
 static int
@@ -467,6 +499,40 @@ setCURL_options (lua_State * L)
 static int
 set_header (lua_State * L)
 {
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+
+  // Load the user def table 
+  // stack now contains: -1 => table
+  if (lua_istable (L, -1))
+    {
+      lua_pushnil (L);
+      // stack now contains: -1 => nil; -2 => table
+      while (lua_next (L, -2))
+	{
+	  // stack now contains: -1 => value; -2 => key; -3 => table
+	  // copy the key so that lua_tostring does not modify the original
+	  lua_pushvalue (L, -2);
+	  // stack now contains: -1 => key; -2 => value; -3 => key; -4 => table
+	  const char *key = lua_tostring (L, -1);
+	  const char *val = lua_tostring (L, -2);
+
+	  char *hstr = NULL;
+	  asprintf (&hstr, "%s: %s", key, val);
+	  if (hstr)
+	    {
+	      c->requestH = curl_slist_append (c->requestH, hstr);
+	      free (hstr);
+	    }
+	  // pop value + copy of key, leaving original key
+	  lua_pop (L, 2);
+	}
+    }
+
+  if (c->requestH)
+    {
+      curl_easy_setopt (c->curl, CURLOPT_HTTPHEADER, c->requestH);
+    }
+
   return 1;
 }
 
@@ -558,9 +624,6 @@ static const luaL_Reg functions[] = {
   {"newconnect", newconnect},
   {"URLEncode", url_encode},
   {"URLDecode", url_decode},
-  {"tableToJSON", table_to_JSON},
-  {"JSONToTable", json_to_table},
-
   {NULL, NULL}
 };
 

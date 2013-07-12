@@ -240,6 +240,9 @@ newconnect (lua_State * L)
       return 0;
     }
 
+  // We will only allow http and https only
+  curl_easy_setopt (curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+
   // Load the user def table 
   // stack now contains: -1 => table
   if (lua_istable (L, -1))
@@ -621,7 +624,7 @@ create_matatable (lua_State * L)
 All the functions supported by library 
 **/
 static const luaL_Reg functions[] = {
-  {"newconnect", newconnect},
+  {"newConnection", newconnect},
   {"URLEncode", url_encode},
   {"URLDecode", url_decode},
   {NULL, NULL}

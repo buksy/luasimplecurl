@@ -240,6 +240,10 @@ newconnect (lua_State * L)
       return 0;
     }
 
+  // We will only allow http and https only
+  curl_easy_setopt (curl, CURLOPT_PROTOCOLS,
+		    CURLPROTO_HTTP | CURLPROTO_HTTPS);
+
   // Load the user def table 
   // stack now contains: -1 => table
   if (lua_istable (L, -1))
@@ -337,8 +341,8 @@ url_encode (lua_State * L)
       const char *s = luaL_checkstring (L, 1);
       lua_pushstring (L, curl_escape (s, strlen (s)));
       return 1;
-    
-}
+
+    }
   else
     {
       luaL_error (L, "string parameter expected");
@@ -355,8 +359,8 @@ url_decode (lua_State * L)
       const char *s = luaL_checkstring (L, 1);
       lua_pushstring (L, curl_unescape (s, strlen (s)));
       return 1;
-    
-}
+
+    }
   else
     {
       luaL_error (L, "string parameter expected");
@@ -441,8 +445,12 @@ perform_get (lua_State * L)
 static int
 perform_post (lua_State * L)
 {
+  struct curl_httppost *formpost = NULL;
+  struct curl_httppost *lastptr = NULL;
+
 // 1 ==> the Object, 2==> POST String/or a readfunction , 3 => the callback function
   sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+
   if (lua_isstring (L, 2))
     {
 
@@ -459,9 +467,29 @@ perform_post (lua_State * L)
       LUA_SET_CALLBACK_FUNCTION (L, 2, readRef, c);
 
     }
+  else if (lua_istable (L, 2))
+    {
+      lua_pushnil (L);
+      while (lua_next (L, 2))
+	{
+	  lua_pushvalue (L, -2);
+	  const char *key = lua_tostring (L, -1);
+	  const char *val = lua_tostring (L, -2);
+	  curl_formadd (&formpost,
+			&lastptr,
+			CURLFORM_COPYNAME, key,
+			CURLFORM_COPYCONTENTS, val, CURLFORM_END);
+	  lua_pop (L, 2);
+	}
+      curl_easy_setopt (c->curl, CURLOPT_HTTPPOST, formpost);
+    }
 
   LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
   DO_CURL_PERFORM (c);
+  if (formpost != NULL)
+    {
+      curl_formfree (formpost);
+    }
   lua_settop (L, 0);
   lua_pushboolean (L, (c->lastError == CURLE_OK));
   return 1;
@@ -621,7 +649,7 @@ create_matatable (lua_State * L)
 All the functions supported by library 
 **/
 static const luaL_Reg functions[] = {
-  {"newconnect", newconnect},
+  {"newConnection", newconnect},
   {"URLEncode", url_encode},
   {"URLDecode", url_decode},
   {NULL, NULL}

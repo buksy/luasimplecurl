@@ -21,6 +21,7 @@
 #include <lua5.2/lua.h>
 #include <lua5.2/lauxlib.h>
 #include <curl/curl.h>
+#include <yajl/yajl_gen.h>
 
 #define SIMPLE_HTTP_METATABLE "simple.http.curl"
 
@@ -368,11 +369,119 @@ url_decode (lua_State * L)
   return 0;
 }
 
+// Table or array should always be in -1 index
+static int do_lua_table_json (yajl_gen gen, lua_State * L) {
+  short is_map = 1;
+  short do_check = 1;
+  if (lua_istable (L, -1)) {
+    // In lua tables are arrays so this is bit of a pain 
+    // only difference between arry and a table is that array will have int keys
+    lua_pushnil (L);
+    while (lua_next(L, -2)) {
+      if (do_check){
+	if (lua_isnumber (L, -2)){
+	  is_map = 0;
+	}else {
+	  is_map = 1;
+	}
+	if (is_map) {
+	  if (yajl_gen_map_open (gen) != yajl_gen_status_ok) 
+	    return -1;
+	}else {
+	   if (yajl_gen_array_open (gen) != yajl_gen_status_ok) 
+	    return -1;
+	}
+	do_check = 0;
+      }
+      
+      if (is_map) {
+	lua_pushvalue (L, -2);
+	const char *key = lua_tostring (L, -1);
+	 if (yajl_gen_string (gen, (const unsigned char *)key, strlen(key) ) != yajl_gen_status_ok) 
+	   return -1;
+	 lua_pop (L, 1);
+      }
+      
+      
+      const char *key = NULL; 
+      char *num = NULL;
+      int is_int = 0;
+      size_t num_size;
+      switch(lua_type(L, -1)) {
+	case LUA_TSTRING:
+	  key = lua_tostring (L, -1);  
+	  if (yajl_gen_string (gen, (const unsigned char *)key, strlen(key) ) != yajl_gen_status_ok) 
+	   return -1;
+	  break;
+	case LUA_TNUMBER:
+// 	  asprintf(&num, "%F", lua_tonumber(L, -1));
+// 	  if (yajl_gen_number(gen, (const char *)num, strlen(num)) != yajl_gen_status_ok) {
+// 	    free (num);
+// 	    return -1;
+// 	  }
+// 	  free (num);
+	  yajl_gen_double(gen, lua_tonumber(L, -1));
+	  break;
+	case LUA_TBOOLEAN:
+	   if (yajl_gen_bool (gen, lua_toboolean(L, -1)) != yajl_gen_status_ok) 
+	   return -1;
+	  break;
+	case LUA_TTABLE:
+	  if (do_lua_table_json(gen, L) != 0)
+	    return -1;
+	  break;
+	default:
+	   if (yajl_gen_null (gen) != yajl_gen_status_ok) 
+	   return -1;
+	  break;
+      }
+      
+      lua_pop(L,1);
+    }
+    if (!do_check) {
+      if (is_map)
+	yajl_gen_map_close (gen);
+      else
+	yajl_gen_array_close (gen);
+    }
+  }
+  return 0;
+}
+
+/**
+ Converts a givan lua table in to a json encoded string
+ no URL encoding doen 
+ **/
 static int
 table_to_JSON (lua_State * L)
 {
-
+  yajl_gen gen = NULL;
+  char *buff = NULL; 
+  size_t size = 0;
+  // Input need to be a table i.e -1 is a lua table
+  gen =  yajl_gen_alloc(NULL);
+  if (lua_istable(L, -1)) {
+    if (do_lua_table_json(gen, L) == 0) {
+      yajl_gen_get_buf(gen, (const unsigned char **)&buff, &size);
+    }else {
+      goto error;
+    }
+  }
+  
+  if (buff)
+    lua_pushlstring (L, buff, size);
+  else
+    lua_pushnil(L);
+   if (gen)
+      yajl_gen_free (gen);
   return 1;
+  
+  error:
+    if (gen)
+      yajl_gen_free (gen);
+    luaL_error (L, "Could not build the JSON string");
+    
+  return 0;
 }
 
 static int
@@ -652,6 +761,8 @@ static const luaL_Reg functions[] = {
   {"newConnection", newconnect},
   {"URLEncode", url_encode},
   {"URLDecode", url_decode},
+  {"tableToJSON", table_to_JSON},
+  {"JSONToTable", json_to_table},
   {NULL, NULL}
 };
 

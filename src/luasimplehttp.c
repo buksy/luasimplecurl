@@ -317,6 +317,7 @@ newconnect (lua_State * L)
   c->L = L;
   c->requestH = NULL;
   c->curl = curl;
+  c->lastError = 0;
 
   //c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
 
@@ -371,81 +372,90 @@ url_decode (lua_State * L)
 }
 
 // Table or array should always be in -1 index
-static int do_lua_table_json (yajl_gen gen, lua_State * L) {
+static int
+do_lua_table_json (yajl_gen gen, lua_State * L)
+{
   short is_map = 1;
   short do_check = 1;
-  if (lua_istable (L, -1)) {
-    // In lua tables are arrays so this is bit of a pain 
-    // only difference between arry and a table is that array will have int keys
-    lua_pushnil (L);
-    while (lua_next(L, -2)) {
-      if (do_check){
-	if (lua_isnumber (L, -2)){
-	  is_map = 0;
-	}else {
-	  is_map = 1;
+  if (lua_istable (L, -1))
+    {
+      // In lua tables are arrays so this is bit of a pain 
+      // only difference between arry and a table is that array will have int keys
+      lua_pushnil (L);
+      while (lua_next (L, -2))
+	{
+	  if (do_check)
+	    {
+	      if (lua_isnumber (L, -2))
+		  is_map = 0;
+	      else
+		  is_map = 1;
+	      if (is_map)
+		{
+		  if (yajl_gen_map_open (gen) != yajl_gen_status_ok)
+		    return -1;
+		}
+	      else
+		{
+		  if (yajl_gen_array_open (gen) != yajl_gen_status_ok)
+		    return -1;
+		}
+	      do_check = 0;
+	    }
+
+	  if (is_map)
+	    {
+	      lua_pushvalue (L, -2);
+	      const char *key = lua_tostring (L, -1);
+	      if (yajl_gen_string
+		  (gen, (const unsigned char *) key,
+		   strlen (key)) != yajl_gen_status_ok)
+		return -1;
+	      lua_pop (L, 1);
+	    }
+
+
+	  const char *key = NULL;
+	  char *num = NULL;
+	  int is_int = 0;
+	  size_t num_size;
+	  switch (lua_type (L, -1))
+	    {
+	    case LUA_TSTRING:
+	      key = lua_tostring (L, -1);
+	      if (yajl_gen_string
+		  (gen, (const unsigned char *) key,
+		   strlen (key)) != yajl_gen_status_ok)
+		return -1;
+	      break;
+	    case LUA_TNUMBER:
+	      yajl_gen_double (gen, lua_tonumber (L, -1));
+	      break;
+	    case LUA_TBOOLEAN:
+	      if (yajl_gen_bool (gen, lua_toboolean (L, -1)) !=
+		  yajl_gen_status_ok)
+		return -1;
+	      break;
+	    case LUA_TTABLE:
+	      if (do_lua_table_json (gen, L) != 0)
+		return -1;
+	      break;
+	    default:
+	      if (yajl_gen_null (gen) != yajl_gen_status_ok)
+		return -1;
+	      break;
+	    }
+
+	  lua_pop (L, 1);
 	}
-	if (is_map) {
-	  if (yajl_gen_map_open (gen) != yajl_gen_status_ok) 
-	    return -1;
-	}else {
-	   if (yajl_gen_array_open (gen) != yajl_gen_status_ok) 
-	    return -1;
+      if (!do_check)
+	{
+	  if (is_map)
+	    yajl_gen_map_close (gen);
+	  else
+	    yajl_gen_array_close (gen);
 	}
-	do_check = 0;
-      }
-      
-      if (is_map) {
-	lua_pushvalue (L, -2);
-	const char *key = lua_tostring (L, -1);
-	 if (yajl_gen_string (gen, (const unsigned char *)key, strlen(key) ) != yajl_gen_status_ok) 
-	   return -1;
-	 lua_pop (L, 1);
-      }
-      
-      
-      const char *key = NULL; 
-      char *num = NULL;
-      int is_int = 0;
-      size_t num_size;
-      switch(lua_type(L, -1)) {
-	case LUA_TSTRING:
-	  key = lua_tostring (L, -1);  
-	  if (yajl_gen_string (gen, (const unsigned char *)key, strlen(key) ) != yajl_gen_status_ok) 
-	   return -1;
-	  break;
-	case LUA_TNUMBER:
-// 	  asprintf(&num, "%F", lua_tonumber(L, -1));
-// 	  if (yajl_gen_number(gen, (const char *)num, strlen(num)) != yajl_gen_status_ok) {
-// 	    free (num);
-// 	    return -1;
-// 	  }
-// 	  free (num);
-	  yajl_gen_double(gen, lua_tonumber(L, -1));
-	  break;
-	case LUA_TBOOLEAN:
-	   if (yajl_gen_bool (gen, lua_toboolean(L, -1)) != yajl_gen_status_ok) 
-	   return -1;
-	  break;
-	case LUA_TTABLE:
-	  if (do_lua_table_json(gen, L) != 0)
-	    return -1;
-	  break;
-	default:
-	   if (yajl_gen_null (gen) != yajl_gen_status_ok) 
-	   return -1;
-	  break;
-      }
-      
-      lua_pop(L,1);
     }
-    if (!do_check) {
-      if (is_map)
-	yajl_gen_map_close (gen);
-      else
-	yajl_gen_array_close (gen);
-    }
-  }
   return 0;
 }
 
@@ -457,71 +467,84 @@ static int
 table_to_JSON (lua_State * L)
 {
   yajl_gen gen = NULL;
-  char *buff = NULL; 
+  char *buff = NULL;
   size_t size = 0;
   // Input need to be a table i.e -1 is a lua table
-  gen =  yajl_gen_alloc(NULL);
-  if (lua_istable(L, -1)) {
-    if (do_lua_table_json(gen, L) == 0) {
-      yajl_gen_get_buf(gen, (const unsigned char **)&buff, &size);
-    }else {
-      goto error;
+  gen = yajl_gen_alloc (NULL);
+  if (lua_istable (L, -1))
+    {
+      if (do_lua_table_json (gen, L) == 0)
+	  yajl_gen_get_buf (gen, (const unsigned char **) &buff, &size);
+      else
+	  goto error;
     }
-  }
-  
-  if (buff)
+
+  if (buff)			// Seesms like the buff is freed by yajl_gen_free
     lua_pushlstring (L, buff, size);
   else
-    lua_pushnil(L);
-   if (gen)
-      yajl_gen_free (gen);
+    lua_pushnil (L);
+  if (gen)
+    yajl_gen_free (gen);
   return 1;
-  
-  error:
-    if (gen)
-      yajl_gen_free (gen);
-    luaL_error (L, "Could not build the JSON string");
-    
+
+error:
+  if (gen)
+    yajl_gen_free (gen);
+  luaL_error (L, "Could not build the JSON string");
+
   return 0;
 }
 
 
-
-static void do_json_object (lua_State *L, yajl_val value, int last_idx, int in_table) {
+/**
+ * Converts given lua JSON string in to a lua table
+ * 
+ */
+static void
+do_json_object (lua_State * L, yajl_val value, int last_idx, int in_table)
+{
   short is_map = 1;
   if (last_idx > 0)
-    lua_pushinteger(L, last_idx);
+    lua_pushinteger (L, last_idx);
+
+  if (YAJL_IS_OBJECT (value))
+    {
+      lua_newtable (L);
+      int i = 0;
+      for (i = 0; i < value->u.object.len; i++)
+	{
+	  lua_pushstring (L, value->u.object.keys[i]);
+	  do_json_object (L, value->u.object.values[i], 0, 1);
+	}
+    }
+  else if (YAJL_IS_ARRAY (value))
+    {
+      int i = 0;
+      lua_newtable (L);
+      for (i = 0; i < value->u.array.len; i++)
+	{
+	  int idx = i + 1; // Lua arrays start with 1
+	  do_json_object (L, value->u.array.values[i], idx, 1);
+	}
+    }
+  else if (YAJL_IS_TRUE (value))
+      lua_pushboolean (L, 1);
+  else if (YAJL_IS_FALSE (value))
+      lua_pushboolean (L, 0);
+  else if (YAJL_IS_DOUBLE (value))
+      lua_pushnumber (L, value->u.number.d);
+  else if (YAJL_IS_INTEGER (value))
+      lua_pushinteger (L, value->u.number.i);
+  else if (YAJL_IS_STRING (value))
+      lua_pushstring (L, value->u.string);
+  else
+      lua_pushnil (L);
+
   
-  if (YAJL_IS_OBJECT (value)) {
-    lua_newtable (L);
-    int i = 0 ; 
-    for (i =0; i< value->u.object.len ; i ++) {
-      lua_pushstring (L, value->u.object.keys[i]);
-      do_json_object (L, value->u.object.values[i], 0, 1); 
-    }
-  }else if (YAJL_IS_ARRAY(value)) {
-    int i = 0 ; 
-    lua_newtable (L);
-    for (i =0; i< value->u.array.len ; i ++) {
-      int idx = i + 1;
-      do_json_object (L, value->u.array.values[i], idx, 1); 
-    }
-  }else if (YAJL_IS_TRUE(value)) {
-    lua_pushboolean (L, 1);
-  }else if (YAJL_IS_FALSE(value)) {
-    lua_pushboolean (L, 0);
-  }else if (YAJL_IS_DOUBLE(value)) {
-    lua_pushnumber (L, value->u.number.d);
-  }else if (YAJL_IS_INTEGER(value)) {
-    lua_pushinteger (L, value->u.number.i);
-  }else if (YAJL_IS_STRING(value)) {
-    lua_pushstring (L, value->u.string);
-  }else{
-    lua_pushnil (L);
-  }
   if (in_table)
-    lua_settable(L, -3);
+    lua_settable (L, -3);
 }
+
 /**
  Parse a given JSON string and convert it to 
  a lua table
@@ -529,20 +552,25 @@ static void do_json_object (lua_State *L, yajl_val value, int last_idx, int in_t
 static int
 json_to_table (lua_State * L)
 {
-  if (lua_isstring(L, 1)) {
-    const char *data = lua_tostring (L,1);
-    lua_pop (L, 1);
-    char error[100];
-    yajl_val value = yajl_tree_parse(data, error, 100);
-    if (value) {
-	do_json_object(L, value, 0, 0);
-	yajl_tree_free(value);
-    }else{
-      luaL_error (L, "Error while parsing the JSON string ( %s )",error);
+  if (lua_isstring (L, 1))
+    {
+      const char *data = lua_tostring (L, 1);
+      lua_pop (L, 1);
+      char error[100];
+      yajl_val value = yajl_tree_parse (data, error, 100);
+      if (value)
+	{
+	  do_json_object (L, value, 0, 0);
+	  yajl_tree_free (value);
+	}
+      else
+	{
+	  luaL_error (L, "Error while parsing the JSON string ( %s )", error);
+	}
     }
-  }else
-    lua_pushnil(L);
-  
+  else
+    lua_pushnil (L);
+
   return 1;
 }
 

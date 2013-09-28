@@ -22,6 +22,7 @@
 #include <lua5.2/lauxlib.h>
 #include <curl/curl.h>
 #include <yajl/yajl_gen.h>
+#include <yajl/yajl_tree.h>
 
 #define SIMPLE_HTTP_METATABLE "simple.http.curl"
 
@@ -450,7 +451,7 @@ static int do_lua_table_json (yajl_gen gen, lua_State * L) {
 
 /**
  Converts a givan lua table in to a json encoded string
- no URL encoding doen 
+ no URL encoding done 
  **/
 static int
 table_to_JSON (lua_State * L)
@@ -484,10 +485,64 @@ table_to_JSON (lua_State * L)
   return 0;
 }
 
+
+
+static void do_json_object (lua_State *L, yajl_val value, int last_idx, int in_table) {
+  short is_map = 1;
+  if (last_idx > 0)
+    lua_pushinteger(L, last_idx);
+  
+  if (YAJL_IS_OBJECT (value)) {
+    lua_newtable (L);
+    int i = 0 ; 
+    for (i =0; i< value->u.object.len ; i ++) {
+      lua_pushstring (L, value->u.object.keys[i]);
+      do_json_object (L, value->u.object.values[i], 0, 1); 
+    }
+  }else if (YAJL_IS_ARRAY(value)) {
+    int i = 0 ; 
+    lua_newtable (L);
+    for (i =0; i< value->u.array.len ; i ++) {
+      int idx = i + 1;
+      do_json_object (L, value->u.array.values[i], idx, 1); 
+    }
+  }else if (YAJL_IS_TRUE(value)) {
+    lua_pushboolean (L, 1);
+  }else if (YAJL_IS_FALSE(value)) {
+    lua_pushboolean (L, 0);
+  }else if (YAJL_IS_DOUBLE(value)) {
+    lua_pushnumber (L, value->u.number.d);
+  }else if (YAJL_IS_INTEGER(value)) {
+    lua_pushinteger (L, value->u.number.i);
+  }else if (YAJL_IS_STRING(value)) {
+    lua_pushstring (L, value->u.string);
+  }else{
+    lua_pushnil (L);
+  }
+  if (in_table)
+    lua_settable(L, -3);
+}
+/**
+ Parse a given JSON string and convert it to 
+ a lua table
+ **/
 static int
 json_to_table (lua_State * L)
 {
-
+  if (lua_isstring(L, 1)) {
+    const char *data = lua_tostring (L,1);
+    lua_pop (L, 1);
+    char error[100];
+    yajl_val value = yajl_tree_parse(data, error, 100);
+    if (value) {
+	do_json_object(L, value, 0, 0);
+	yajl_tree_free(value);
+    }else{
+      luaL_error (L, "Error while parsing the JSON string ( %s )",error);
+    }
+  }else
+    lua_pushnil(L);
+  
   return 1;
 }
 

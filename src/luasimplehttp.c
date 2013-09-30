@@ -443,6 +443,24 @@ perform_get (lua_State * L)
 }
 
 static int
+perform_delete( lua_State * L)
+{
+	sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+	curl_easy_setopt( c->curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+	
+	if(lua_isstring(L, 2))
+	{
+		 curl_easy_setopt (c->curl, CURLOPT_POSTFIELDS, lua_tostring (L, 2));
+	}
+	
+	LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  	DO_CURL_PERFORM (c);
+  	lua_settop (L, 0);
+  	lua_pushboolean (L, (c->lastError == CURLE_OK));
+  	return 1;
+}
+
+static int
 perform_post (lua_State * L)
 {
   struct curl_httppost *formpost = NULL;
@@ -626,6 +644,7 @@ static const luaL_Reg c_funcs[] = {
   {"get", perform_get},
   {"post", perform_post},
   {"put", perform_put},
+  {"delete", perform_delete},
   // {"setCURLOption", setCURL_options},
   {"setRequestHeaders", set_header},
   {"setBasicAuth", set_basic_auth},

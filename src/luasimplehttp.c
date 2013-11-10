@@ -39,7 +39,9 @@
 
 #define DO_CURL_PERFORM(c) \
 	if (c && c->curl) \
-	  c->lastError = curl_easy_perform (c->curl);
+	{ c->lastStatus = 0; \
+	  c->lastError = curl_easy_perform (c->curl); \
+	}
 
 typedef struct header
 {
@@ -64,6 +66,7 @@ typedef struct simple_curl
   int writeRef;
   int readRef;
   int lastError;
+  int lastStatus;
   reqHeaders *requestH;
 } sCurl;
 
@@ -103,15 +106,29 @@ build_header (sHeader * h, char *hline)
 {
 
   char *saveptr = NULL;
-  char *ptr = strtok_r (hline, "= ", &saveptr);
-  while (ptr != NULL)
+  char *ptr = strtok_r (hline, ":", &saveptr);
+  if (ptr != NULL)
     {
-      if (!h->name)
-	h->name = strdup (ptr);
-      else
-	h->value = strdup (ptr);
-      ptr = strtok_r (NULL, "= ", &saveptr);
+      while (ptr != NULL)
+	{
+	  if (!h->name)
+	    {
+	      h->name = strdup (ptr);
+	    }
+	  else
+	    {
+	      if (ptr[0] == ' ')
+		ptr++;
+	      h->value = strdup (ptr);
+	    }
+	  ptr = strtok_r (NULL, "\0", &saveptr);
+	}
     }
+  else
+    h->name = strdup (hline);
+
+  if (!h->value)
+    h->value = strdup ("");
 
 }
 
@@ -187,8 +204,14 @@ header_callback_fn (void *ptr, size_t size, size_t nmemb, void *userdata)
   sCurl *scurl = (sCurl *) userdata;
   if (scurl)
     {
+
       if ((ret > 0) && (data[0] != '\r') && (data[0] != '\n'))
 	{
+	  if (scurl->lastStatus == 0)
+	    {
+	      curl_easy_getinfo (scurl->curl, CURLINFO_RESPONSE_CODE,
+				 &scurl->lastStatus);
+	    }
 	  if (scurl->hlist && scurl->hdone)
 	    {
 	      clean_up_headers (scurl->hlist);
@@ -315,6 +338,8 @@ newconnect (lua_State * L)
   c->L = L;
   c->requestH = NULL;
   c->curl = curl;
+  c->lastError = 0;
+  c->lastStatus = 0;
 
   //c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
 
@@ -443,21 +468,21 @@ perform_get (lua_State * L)
 }
 
 static int
-perform_delete( lua_State * L)
+perform_delete (lua_State * L)
 {
-	sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
-	curl_easy_setopt( c->curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-	
-	if(lua_isstring(L, 2))
-	{
-		 curl_easy_setopt (c->curl, CURLOPT_POSTFIELDS, lua_tostring (L, 2));
-	}
-	
-	LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
-  	DO_CURL_PERFORM (c);
-  	lua_settop (L, 0);
-  	lua_pushboolean (L, (c->lastError == CURLE_OK));
-  	return 1;
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  curl_easy_setopt (c->curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+
+  if (lua_isstring (L, 2))
+    {
+      curl_easy_setopt (c->curl, CURLOPT_POSTFIELDS, lua_tostring (L, 2));
+    }
+
+  LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  DO_CURL_PERFORM (c);
+  lua_settop (L, 0);
+  lua_pushboolean (L, (c->lastError == CURLE_OK));
+  return 1;
 }
 
 static int
@@ -637,6 +662,15 @@ get_last_error (lua_State * L)
   return 2;
 }
 
+static
+get_staus_code (lua_State * L)
+{
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  lua_settop (L, 0);
+  lua_pushinteger (L, c->lastStatus);
+  return 1;
+}
+
 ////////////////////////////////////------ End of Metatable Functions sCurl -----////////////////////////////////
 
 static const luaL_Reg c_funcs[] = {
@@ -650,6 +684,7 @@ static const luaL_Reg c_funcs[] = {
   {"setBasicAuth", set_basic_auth},
   {"getResponseHeaders", get_header},
   {"disconnect", disconnect},
+  {"getHTTPStatusCode", get_staus_code},
   {"getLastError", get_last_error},
   {NULL, NULL}
 };

@@ -267,6 +267,9 @@ newconnect (lua_State * L)
   curl_easy_setopt (curl, CURLOPT_PROTOCOLS,
 		    CURLPROTO_HTTP | CURLPROTO_HTTPS);
 
+  // We are removing the single handling out of curl, as this does longjump which is a bad idea in multithreaded environment 
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
   // Load the user def table 
   // stack now contains: -1 => table
   if (lua_istable (L, -1))

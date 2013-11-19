@@ -268,7 +268,7 @@ newconnect (lua_State * L)
 		    CURLPROTO_HTTP | CURLPROTO_HTTPS);
 
   // We are removing the single handling out of curl, as this does longjump which is a bad idea in multithreaded environment 
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1L);
 
   // Load the user def table 
   // stack now contains: -1 => table
@@ -392,6 +392,80 @@ url_decode (lua_State * L)
   else
     {
       luaL_error (L, "string parameter expected");
+    }
+  return 0;
+}
+
+static int
+url_build_query (lua_State * L)
+{
+
+  int encode = 1;
+  if (lua_isboolean (L, 2))
+    {
+      encode = (lua_toboolean (L, 2)) ? 1 : 0;
+    }
+
+  if (lua_istable (L, 1))
+    {
+      char *query = NULL;
+      size_t currlen = 0;
+      lua_pushnil (L);
+      while (lua_next (L, 1))
+	{
+	  lua_pushvalue (L, -3);
+	  const char *key = lua_tostring (L, -3);
+	  const char *val = lua_tostring (L, -2);
+	  if (key && val)
+	    {
+
+	      char *to_add_key = NULL;
+	      char *to_add_val = NULL;
+	      if (encode)
+		{
+		  to_add_key = curl_escape (key, strlen (key));
+		  to_add_val = curl_escape (val, strlen (val));
+		}
+	      else
+		{
+		  to_add_key = strdup (key);
+		  to_add_val = strdup (val);
+		}
+	      char *curr_param = NULL;
+	      asprintf (&curr_param, "%s=%s", to_add_key, to_add_val);
+	      free (to_add_val);
+	      free (to_add_key);
+	      to_add_val = NULL;
+	      to_add_key = NULL;
+	      if (query)
+		{
+		  char *old = query;
+		  size_t len = strlen (curr_param);
+		  query = calloc (1, (currlen + strlen (curr_param) + 2));
+		  memcpy (query, old, currlen);
+		  query[currlen] = '\x26';
+		  memcpy (&query[currlen + 1], curr_param, len);
+		  currlen += len + 1;
+		  free (old);
+		  curr_param = NULL;
+		  old = NULL;
+		}
+	      else
+		{
+		  query = strdup (curr_param);
+		  currlen = strlen (query);
+		}
+	      free (curr_param);
+	      curr_param = NULL;
+	    }
+	  lua_pop (L, 2);
+	}
+      lua_pushstring (L, query);
+      return 1;
+    }
+  else
+    {
+      luaL_error (L, "Table in the from of tbl['foo']='bar' is required");
     }
   return 0;
 }
@@ -546,19 +620,47 @@ perform_put (lua_State * L)
 {
   sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
 
+  curl_easy_setopt (c->curl, CURLOPT_CUSTOMREQUEST, "PUT");
+  struct curl_httppost *formpost = NULL;
+  struct curl_httppost *lastptr = NULL;
+
   if (lua_isfunction (L, 2))
     {
       // Set the chunk encoding header
       c->requestH =
 	curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
       curl_easy_setopt (c->curl, CURLOPT_HTTPHEADER, c->requestH);
-      curl_easy_setopt (c->curl, CURLOPT_UPLOAD, 1L);
       LUA_SET_CALLBACK_FUNCTION (L, 2, readRef, c);
 
+    }
+  else if (lua_isstring (L, 2))
+    {
+      curl_easy_setopt (c->curl, CURLOPT_POSTFIELDS, lua_tostring (L, 2));
+    }
+  else if (lua_istable (L, 2))
+    {
+      lua_pushnil (L);
+      while (lua_next (L, 2))
+	{
+	  lua_pushvalue (L, -2);
+	  const char *key = lua_tostring (L, -1);
+	  const char *val = lua_tostring (L, -2);
+	  printf ("Adding key %s : %s\n", key, val);
+	  curl_formadd (&formpost,
+			&lastptr,
+			CURLFORM_COPYNAME, key,
+			CURLFORM_COPYCONTENTS, val, CURLFORM_END);
+	  lua_pop (L, 2);
+	}
+      curl_easy_setopt (c->curl, CURLOPT_HTTPPOST, formpost);
     }
 
   LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
   DO_CURL_PERFORM (c);
+  if (formpost != NULL)
+    {
+      curl_formfree (formpost);
+    }
   lua_settop (L, 0);
   lua_pushboolean (L, (c->lastError == CURLE_OK));
   return 1;
@@ -674,6 +776,7 @@ get_staus_code (lua_State * L)
   return 1;
 }
 
+
 ////////////////////////////////////------ End of Metatable Functions sCurl -----////////////////////////////////
 
 static const luaL_Reg c_funcs[] = {
@@ -709,6 +812,7 @@ static const luaL_Reg functions[] = {
   {"newConnection", newconnect},
   {"URLEncode", url_encode},
   {"URLDecode", url_decode},
+  {"buildHTTPQuery", url_build_query},
   {NULL, NULL}
 };
 

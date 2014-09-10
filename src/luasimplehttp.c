@@ -67,6 +67,7 @@ typedef struct simple_curl
   int readRef;
   int lastError;
   int lastStatus;
+  int enableCookie;
   reqHeaders *requestH;
 } sCurl;
 
@@ -270,6 +271,8 @@ newconnect (lua_State * L)
   // We are removing the single handling out of curl, as this does longjump which is a bad idea in multithreaded environment 
   curl_easy_setopt (curl, CURLOPT_NOSIGNAL, 1L);
 
+  int enable_cookie = 0;
+
   // Load the user def table 
   // stack now contains: -1 => table
   if (lua_istable (L, -1))
@@ -320,6 +323,14 @@ newconnect (lua_State * L)
 	      curl_easy_setopt (curl, CURLOPT_TIMEOUT_MS,
 				lua_tonumber (L, -2));
 	    }
+	  else if (strcasecmp ("enable_cookie", key) == 0)
+	    {
+	      enable_cookie = lua_toboolean (L, -2);
+	      if (enable_cookie)
+		{
+		  curl_easy_setopt (curl, CURLOPT_COOKIEFILE, "");	/* just to start the cookie engine */
+		}
+	    }
 	  // pop value + copy of key, leaving original key
 	  lua_pop (L, 2);
 	  // stack now contains: -1 => key; -2 => table
@@ -343,6 +354,7 @@ newconnect (lua_State * L)
   c->curl = curl;
   c->lastError = 0;
   c->lastStatus = 0;
+  c->enableCookie = enable_cookie;
 
   //c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
 
@@ -538,6 +550,12 @@ perform_get (lua_State * L)
   sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
   curl_easy_setopt (c->curl, CURLOPT_HTTPGET, 1L);
   LUA_SET_CALLBACK_FUNCTION (L, 2, writeRef, c);
+  if (lua_isstring (L, 2))
+    {
+      const char *url = lua_tostring (L, 2);
+      if (url)
+	curl_easy_setopt (c->curl, CURLOPT_URL, url);
+    }
   DO_CURL_PERFORM (c);
   lua_settop (L, 0);
   lua_pushboolean (L, (c->lastError == CURLE_OK));
@@ -556,6 +574,12 @@ perform_delete (lua_State * L)
     }
 
   LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  if (lua_isstring (L, 4))
+    {
+      const char *url = lua_tostring (L, 4);
+      if (url)
+	curl_easy_setopt (c->curl, CURLOPT_URL, url);
+    }
   DO_CURL_PERFORM (c);
   lua_settop (L, 0);
   lua_pushboolean (L, (c->lastError == CURLE_OK));
@@ -605,6 +629,12 @@ perform_post (lua_State * L)
     }
 
   LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  if (lua_isstring (L, 4))
+    {
+      const char *url = lua_tostring (L, 4);
+      if (url)
+	curl_easy_setopt (c->curl, CURLOPT_URL, url);
+    }
   DO_CURL_PERFORM (c);
   if (formpost != NULL)
     {
@@ -645,7 +675,7 @@ perform_put (lua_State * L)
 	  lua_pushvalue (L, -2);
 	  const char *key = lua_tostring (L, -1);
 	  const char *val = lua_tostring (L, -2);
-	  printf ("Adding key %s : %s\n", key, val);
+	  //printf ("Adding key %s : %s\n", key, val);
 	  curl_formadd (&formpost,
 			&lastptr,
 			CURLFORM_COPYNAME, key,
@@ -656,6 +686,12 @@ perform_put (lua_State * L)
     }
 
   LUA_SET_CALLBACK_FUNCTION (L, 3, writeRef, c);
+  if (lua_isstring (L, 4))
+    {
+      const char *url = lua_tostring (L, 4);
+      if (url)
+	curl_easy_setopt (c->curl, CURLOPT_URL, url);
+    }
   DO_CURL_PERFORM (c);
   if (formpost != NULL)
     {
@@ -683,6 +719,11 @@ set_header (lua_State * L)
     {
       lua_pushnil (L);
       // stack now contains: -1 => nil; -2 => table
+      /*if (c->requestH) 
+         {
+         curl_slist_free_all (c->requestH);
+         c->requestH = NULL;
+         } */
       while (lua_next (L, -2))
 	{
 	  // stack now contains: -1 => value; -2 => key; -3 => table
@@ -710,6 +751,28 @@ set_header (lua_State * L)
     }
 
   return 1;
+}
+
+static int
+clear_request_headers (lua_State * L)
+{
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  if (c->requestH)
+    {
+      curl_slist_free_all (c->requestH);
+      c->requestH = NULL;
+    }
+  lua_settop (L, 0);
+  return 0;
+}
+
+static int
+set_url (lua_State * L)
+{
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  curl_easy_setopt (c->curl, CURLOPT_URL, lua_tostring (L, -1));
+  lua_settop (L, 0);
+  return 0;
 }
 
 static int
@@ -767,7 +830,7 @@ get_last_error (lua_State * L)
   return 2;
 }
 
-static
+static int
 get_staus_code (lua_State * L)
 {
   sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
@@ -776,6 +839,39 @@ get_staus_code (lua_State * L)
   return 1;
 }
 
+static int
+get_cookies (lua_State * L)
+{
+  CURLcode res;
+  struct curl_slist *cookies = NULL;
+  struct curl_slist *nc = NULL;
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  lua_settop (L, 0);
+  int i = 0;
+  lua_newtable (L);
+  if (c->enableCookie)
+    {
+      res = curl_easy_getinfo (c->curl, CURLINFO_COOKIELIST, &cookies);
+      if (res == CURLE_OK)
+	{
+	  nc = cookies, i = 1;
+	  while (nc)
+	    {
+	      lua_pushinteger (L, i);
+	      lua_pushstring (L, nc->data);
+	      lua_settable (L, -3);
+	      nc = nc->next;
+	      i++;
+	    }
+	}
+
+      if (cookies)
+	curl_slist_free_all (cookies);
+
+      cookies = NULL;
+    }
+  return 1;
+}
 
 ////////////////////////////////////------ End of Metatable Functions sCurl -----////////////////////////////////
 
@@ -792,6 +888,9 @@ static const luaL_Reg c_funcs[] = {
   {"disconnect", disconnect},
   {"getHTTPStatusCode", get_staus_code},
   {"getLastError", get_last_error},
+  {"getCookies", get_cookies},
+  {"setURL", set_url},
+  {"clearRequestHeaders", clear_request_headers},
   {NULL, NULL}
 };
 

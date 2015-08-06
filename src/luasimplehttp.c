@@ -69,7 +69,7 @@ typedef struct simple_curl
   int lastError;
   int lastStatus;
   int enableCookie;
-  int sslVerifyRef reqHeaders * requestH;
+  reqHeaders *requestH;
   struct curl_slist *resolveList;
 } sCurl;
 
@@ -918,27 +918,45 @@ set_SSL_Options (lua_State * L)
 	    }
 	  else if (strcasecmp ("verify_peer", key) == 0)
 	    {
-	      curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER,
+	      curl_easy_setopt (c->curl, CURLOPT_SSL_VERIFYPEER,
 				((lua_toboolean (L, -2)) ? 1L : 0L));
 	    }
 	  else if (strcasecmp ("verify_host", key) == 0)
 	    {
-	      curl_easy_setopt (curl, CURLOPT_SSL_VERIFYHOST,
+	      curl_easy_setopt (c->curl, CURLOPT_SSL_VERIFYHOST,
 				((lua_toboolean (L, -2)) ? 1L : 0L));
 	    }
 	  else if (strcasecmp ("private_key", key) == 0)
 	    {
-	      curl_easy_setopt (curl, CURLOPT_SSLKEY, lua_tostring (L, -2));
+	      curl_easy_setopt (c->curl, CURLOPT_SSLKEY,
+				lua_tostring (L, -2));
 	    }
 	  else if (strcasecmp ("ca_cert", key) == 0)
 	    {
-	      curl_easy_setopt (curl, CURLOPT_CAINFO, lua_tostring (L, -2));
+	      curl_easy_setopt (c->curl, CURLOPT_CAINFO,
+				lua_tostring (L, -2));
 	    }
 	  else if (strcasecmp ("cert", key) == 0)
 	    {
-	      curl_easy_setopt (curl, CURLOPT_SSLCERT, lua_tostring (L, -2));
+	      curl_easy_setopt (c->curl, CURLOPT_SSLCERT,
+				lua_tostring (L, -2));
 	    }
 	  lua_pop (L, 2);
+	}
+    }
+  return 0;
+}
+
+static int
+set_resolver (lua_State * L)
+{
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  if (c)
+    {
+      if (lua_isstring (L, -1))
+	{
+	  c->resolveList =
+	    curl_slist_append (c->resolveList, lua_tostring (L, -1));
 	}
     }
   return 0;
@@ -963,6 +981,7 @@ static const luaL_Reg c_funcs[] = {
   {"setURL", set_url},
   {"clearRequestHeaders", clear_request_headers},
   {"setSSLOptions", set_SSL_Options},
+  {"setResolver", set_resolver},
   {NULL, NULL}
 };
 

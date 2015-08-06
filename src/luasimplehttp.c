@@ -25,7 +25,6 @@
 #define SIMPLE_HTTP_METATABLE "simple.http.curl"
 
 
-
 #define LUA_SET_CALLBACK_FUNCTION(L , index , fref, c) \
 	 if (lua_isfunction(L,index)) \
 	  {  \
@@ -40,7 +39,9 @@
 #define DO_CURL_PERFORM(c) \
 	if (c && c->curl) \
 	{ c->lastStatus = 0; \
-	  c->lastError = curl_easy_perform (c->curl); \
+          if (c->resolveList) \
+                curl_easy_setopt(c->curl, CURLOPT_RESOLVE, c->resolveList); \
+          c->lastError = curl_easy_perform (c->curl); \
 	}
 
 typedef struct header
@@ -68,7 +69,8 @@ typedef struct simple_curl
   int lastError;
   int lastStatus;
   int enableCookie;
-  reqHeaders *requestH;
+  int sslVerifyRef reqHeaders * requestH;
+  struct curl_slist *resolveList;
 } sCurl;
 
 
@@ -355,6 +357,7 @@ newconnect (lua_State * L)
   c->lastError = 0;
   c->lastStatus = 0;
   c->enableCookie = enable_cookie;
+  c->resolveList = NULL;
 
   //c->requestH = curl_slist_append (c->requestH, "Transfer-Encoding: chunked");
 
@@ -540,6 +543,12 @@ gc_curl (lua_State * L)
 	  curl_slist_free_all (c->requestH);
 	  c->requestH = NULL;
 	}
+      if (c->resolveList)
+	{
+	  curl_slist_free_all (c->resolveList);
+	  c->resolveList = NULL;
+	}
+
     }
   return 0;
 }
@@ -873,6 +882,68 @@ get_cookies (lua_State * L)
   return 1;
 }
 
+// SSL related specifications
+/* Available options as follow as a lua table
+   ["cert_type"] = string  
+   ["verify_peer"] = bool
+   ["verify_host"] = bool
+   ["private_key"] = string (path to the file)
+   ["CA_cert"]     = string (path to file)
+   ["cert"]       = string (path to file)
+
+*/
+
+static int
+set_SSL_Options (lua_State * L)
+{
+
+  sCurl *c = (sCurl *) luaL_checkudata (L, 1, SIMPLE_HTTP_METATABLE);
+  // Load the user def table 
+  // stack now contains: -1 => table
+  if (lua_istable (L, -1))
+    {
+      lua_pushnil (L);
+      // stack now contains: -1 => nil; -2 => table
+      while (lua_next (L, -2))
+	{
+	  // stack now contains: -1 => value; -2 => key; -3 => table
+	  // copy the key so that lua_tostring does not modify the original
+	  lua_pushvalue (L, -2);
+	  // stack now contains: -1 => key; -2 => value; -3 => key; -4 => table
+	  const char *key = lua_tostring (L, -1);
+	  if (strcasecmp ("cert_type", key) == 0)
+	    {
+	      curl_easy_setopt (c->curl, CURLOPT_SSLCERTTYPE,
+				lua_tostring (L, -2));
+	    }
+	  else if (strcasecmp ("verify_peer", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_SSL_VERIFYPEER,
+				((lua_toboolean (L, -2)) ? 1L : 0L));
+	    }
+	  else if (strcasecmp ("verify_host", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_SSL_VERIFYHOST,
+				((lua_toboolean (L, -2)) ? 1L : 0L));
+	    }
+	  else if (strcasecmp ("private_key", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_SSLKEY, lua_tostring (L, -2));
+	    }
+	  else if (strcasecmp ("ca_cert", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_CAINFO, lua_tostring (L, -2));
+	    }
+	  else if (strcasecmp ("cert", key) == 0)
+	    {
+	      curl_easy_setopt (curl, CURLOPT_SSLCERT, lua_tostring (L, -2));
+	    }
+	  lua_pop (L, 2);
+	}
+    }
+  return 0;
+}
+
 ////////////////////////////////////------ End of Metatable Functions sCurl -----////////////////////////////////
 
 static const luaL_Reg c_funcs[] = {
@@ -891,6 +962,7 @@ static const luaL_Reg c_funcs[] = {
   {"getCookies", get_cookies},
   {"setURL", set_url},
   {"clearRequestHeaders", clear_request_headers},
+  {"setSSLOptions", set_SSL_Options},
   {NULL, NULL}
 };
 
@@ -923,7 +995,7 @@ LUALIB_API int
 luaopen_simplehttp (lua_State * L)
 {
   // Initialize curl
-  curl_global_init (CURL_GLOBAL_ALL);
+  //curl_global_init (CURL_GLOBAL_ALL);
   /* Create metatable */
   create_matatable (L);
   /* Create module */
